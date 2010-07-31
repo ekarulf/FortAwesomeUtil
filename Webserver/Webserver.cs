@@ -13,14 +13,12 @@ namespace FortAwesomeUtil.Webserver
 {
     class Webserver
     {
-        private Thread dispatchThread = null;
-        private volatile bool dispatchThreadAlive = false;
-        private HttpListener server;
+        private HttpListener server = null;
         private object serverLock = new object();
         private Dictionary<Regex, Type> services = new Dictionary<Regex, Type>();
-
-        // Compiled Regular Expressions
-        private Regex routingRegex;
+        private Regex routingRegex = null;      // Compiled Regular Expressions
+        private List<ManualResetEvent> processingEvents = new List<ManualResetEvent>();     // Async completion markers
+        private object processingEventsLock = new object();
 
         public Webserver()
         {
@@ -30,6 +28,7 @@ namespace FortAwesomeUtil.Webserver
                 throw new PlatformNotSupportedException("Windows XP SP2/Server 2003 or newer is required.");
             }
 
+            // Constructed here to prevent errors on unsupported kernels
             server = new HttpListener();
         }
 
@@ -72,7 +71,7 @@ namespace FortAwesomeUtil.Webserver
             }
         }
 
-        public void StartServer()
+        public void Start()
         {
             lock (serverLock)
             {
@@ -81,13 +80,18 @@ namespace FortAwesomeUtil.Webserver
                     throw new InvalidOperationException("Server already started");
                 }
 
-                Debug.Assert(dispatchThread == null);
-                dispatchThread = new Thread(new ThreadStart(RunServer));
-                dispatchThread.Start();
+                // Pre-compute URL processing
+                GenerateRoutes();
+
+                // Signals to other methods that the server has started
+                server.Start();
+
+                // Register Async Request Handler
+                server.BeginGetContext(new AsyncCallback(this.ProcessRequest), null);
             }
         }
 
-        public void StopServer()
+        public void Stop()
         {
             lock (serverLock)
             {
@@ -96,50 +100,43 @@ namespace FortAwesomeUtil.Webserver
                     throw new InvalidOperationException("Server has not started");
                 }
 
-                dispatchThreadAlive = false;
-                server.Stop();
-                dispatchThread.Join();
+                // Stop accepting new connections and finish existing queue
+                server.Close();
             }
         }
 
-        private void RunServer()
+        public void Join()
         {
-            Debug.Assert(Thread.CurrentThread == dispatchThread, "RunServer should only run inside the dispatch thread");
-
-            // Async completion markers
-            List<ManualResetEvent> processingEvents = new List<ManualResetEvent>();
-
             lock (serverLock)
             {
-                // Pre-compute URL processing
-                GenerateRoutes();
-
-                // Signals to other methods that the server has started
-                server.Start();
+                if (!server.IsListening)
+                {
+                    throw new InvalidOperationException("Server has not started");
+                }
             }
 
-            while (dispatchThreadAlive)
+            lock (processingEvents)
             {
-                // Wait for a incoming request and enqueue it for the threadpool
-                try
-                {
-                    HttpListenerContext ctx = server.GetContext();
-                    ManualResetEvent doneEvent = new ManualResetEvent(false);
-                    Webservice webservice = ResolveWebservice(ctx);
-                    ThreadPool.QueueUserWorkItem(new WaitCallback(webservice.ProcessRequest), doneEvent);
-                    processingEvents.Add(doneEvent);
-                }
-                catch (HttpListenerException)
-                {
-                    // No cleanup needed
-                }
+                // Block until all workers are complete
+                WaitHandle.WaitAll(processingEvents.ToArray());
+            }
+
+        }
+
+        private void ProcessRequest(IAsyncResult result)
+        {
+            HttpListenerContext ctx = server.EndGetContext(result);
+            ManualResetEvent doneEvent = new ManualResetEvent(false);
+            Webservice webservice = ResolveWebservice(ctx);
+            ThreadPool.QueueUserWorkItem(new WaitCallback(webservice.ProcessRequest), doneEvent);
+
+            lock (processingEvents)
+            {
+                processingEvents.Add(doneEvent);
 
                 // Prune the processingEvents list
                 processingEvents.RemoveAll(processingEvent => processingEvent.WaitOne(0));
-
             }
-            server.Stop();
-            WaitHandle.WaitAll(processingEvents.ToArray());   // Blocks until all workers are complete
         }
 
         private void GenerateRoutes()
