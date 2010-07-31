@@ -32,6 +32,7 @@ namespace FortAwesomeUtil.Webserver
             }
         }
 
-        // internal sealed static ?????? GetMappings()
+        // must be public to avoid dealing with ReflectionPermission
+        // public sealed static ?????? GetMappings()
     }
 }

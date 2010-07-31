@@ -9,12 +9,15 @@ using System.Diagnostics;
 using System.ComponentModel;
 using System.Reflection;
 
+
 namespace FortAwesomeUtil.Webserver
 {
     class Webserver
     {
+        // N.B. - This class makes heavy use of Regex objects, read up on the dangers of compiled Regex
+        private static Regex EscapedHttpWildcardRe = new Regex(@"^http[s]?://(\\\+|\\\*)(?:\:[\d]+)?/$", RegexOptions.Compiled);
         private HttpListener server = null;
-        private Dictionary<Regex, Type> services = new Dictionary<Regex, Type>();
+        private Dictionary<string, Type> services = new Dictionary<string, Type>();
         private Regex routingRegex = null;
         private List<ManualResetEvent> requestCompletionEvents = new List<ManualResetEvent>();
 
@@ -40,20 +43,8 @@ namespace FortAwesomeUtil.Webserver
                     throw new InvalidOperationException("Can not add a prefix to a running server");
                 }
 
-                // Translate path into regex friendly path
-                Regex key;
-                if (path.StartsWith("http://+", StringComparison.OrdinalIgnoreCase) ||
-                    path.StartsWith("http://*", StringComparison.OrdinalIgnoreCase))
-                {
-                    key = new Regex("http://.+" + Regex.Escape(path.Substring(8)), RegexOptions.Compiled);
-                }
-                else
-                {
-                    key = new Regex(Regex.Escape(path), RegexOptions.Compiled);
-                }
-
                 // Register into route processing
-                services.Add(key, webservice.GetType());
+                services.Add(path, webservice.GetType());
             }
         }
 
@@ -137,23 +128,41 @@ namespace FortAwesomeUtil.Webserver
             }
         }
 
+        /// <summary>
+        /// This function generates a giant regular expression used for URL routing
+        /// 
+        /// The regular expression is designed to be used with CaptureCollections, where the
+        /// captured group index can be used to lookup the appropriate Webservice
+        /// </summary>
         private void GenerateRoutes()
         {
             StringBuilder sb = new StringBuilder();
 
-            // Group 1: Prefix
-            bool firstPrefix = true;
+            // Prefix
+            bool first = true;
             foreach (string prefix in server.Prefixes)
             {
-                sb.Append(firstPrefix ? "(" : "|");
-                sb.Append(Regex.Escape(prefix));
+                string clean_prefix = Regex.Escape(prefix);
+                clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, ".+");
+                sb.Append(first ? "(?:" : "|");
+                sb.Append(clean_prefix);
+                first = false;
             }
             sb.Append(")");
 
-            // Group 2: Webservice Path
-
-            // Group 3: Webservice Method Path
-
+            // Webservice
+            first = true;
+            foreach (KeyValuePair<string, Type> kvp in services)
+            {
+                string path = Regex.Escape(kvp.Key);
+                Type serviceType = kvp.Value;
+                sb.Append(first ? "(?:" : "|");
+                // Ideally I would be passing: Class<? extends Webservice>, which makes static invocation much prettier :)
+                Regex webserviceMap = (Regex)serviceType.InvokeMember("GetURLMapping", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy, null, null, null);
+                sb.AppendFormat("({0}({1}))", path, webserviceMap.ToString());
+                first = false;
+            }
+            sb.Append(")");
         }
 
         private Webservice ResolveWebservice(HttpListenerContext context)
@@ -164,7 +173,8 @@ namespace FortAwesomeUtil.Webserver
             
             // Group 1: Prefix - assumed
             // Group 2: Webservice Path
-            services.First(kvp => kvp.Key.Matches(
+            services.First(kvp => kvp.Key.Matches()));
+            
             throw new NotImplementedException();
         }
     }
