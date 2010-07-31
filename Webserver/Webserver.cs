@@ -14,11 +14,9 @@ namespace FortAwesomeUtil.Webserver
     class Webserver
     {
         private HttpListener server = null;
-        private object serverLock = new object();
         private Dictionary<Regex, Type> services = new Dictionary<Regex, Type>();
-        private Regex routingRegex = null;      // Compiled Regular Expressions
-        private List<ManualResetEvent> processingEvents = new List<ManualResetEvent>();     // Async completion markers
-        private object processingEventsLock = new object();
+        private Regex routingRegex = null;
+        private List<ManualResetEvent> requestCompletionEvents = new List<ManualResetEvent>();
 
         public Webserver()
         {
@@ -34,7 +32,7 @@ namespace FortAwesomeUtil.Webserver
 
         public void RegisterWebservice(string path, Webservice webservice)
         {
-            lock (serverLock)
+            lock (server)
             {
                 // This limitation allows us to pre-compute the url processing regular expression
                 if (server.IsListening)
@@ -61,7 +59,7 @@ namespace FortAwesomeUtil.Webserver
 
         public void Bind(string prefix)
         {
-            lock (serverLock)
+            lock (server)
             {
                 if (server.IsListening)
                 {
@@ -73,7 +71,7 @@ namespace FortAwesomeUtil.Webserver
 
         public void Start()
         {
-            lock (serverLock)
+            lock (server)
             {
                 if (server.IsListening)
                 {
@@ -93,7 +91,7 @@ namespace FortAwesomeUtil.Webserver
 
         public void Stop()
         {
-            lock (serverLock)
+            lock (server)
             {
                 if (!server.IsListening)
                 {
@@ -107,7 +105,7 @@ namespace FortAwesomeUtil.Webserver
 
         public void Join()
         {
-            lock (serverLock)
+            lock (server)
             {
                 if (!server.IsListening)
                 {
@@ -115,10 +113,10 @@ namespace FortAwesomeUtil.Webserver
                 }
             }
 
-            lock (processingEvents)
+            lock (requestCompletionEvents)
             {
                 // Block until all workers are complete
-                WaitHandle.WaitAll(processingEvents.ToArray());
+                WaitHandle.WaitAll(requestCompletionEvents.ToArray());
             }
 
         }
@@ -130,12 +128,12 @@ namespace FortAwesomeUtil.Webserver
             Webservice webservice = ResolveWebservice(ctx);
             ThreadPool.QueueUserWorkItem(new WaitCallback(webservice.ProcessRequest), doneEvent);
 
-            lock (processingEvents)
+            lock (requestCompletionEvents)
             {
-                processingEvents.Add(doneEvent);
+                requestCompletionEvents.Add(doneEvent);
 
                 // Prune the processingEvents list
-                processingEvents.RemoveAll(processingEvent => processingEvent.WaitOne(0));
+                requestCompletionEvents.RemoveAll(processingEvent => processingEvent.WaitOne(0));
             }
         }
 
