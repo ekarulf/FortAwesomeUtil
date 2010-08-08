@@ -4,35 +4,108 @@ using System.Linq;
 using System.Text;
 using System.Net;
 using System.Threading;
+using System.Text.RegularExpressions;
+using System.Reflection;
+using FortAwesomeUtil.Webserver.Framework;
 
 namespace FortAwesomeUtil.Webserver
 {
-    class Webservice
+    abstract class Webservice
     {
-        internal HttpListenerContext _context;
-        // internal static ?????? mapping
-        protected HttpListenerRequest Request { get { return _context.Request; } }
-        protected HttpListenerResponse Response { get { return _context.Response; } }
+        private static readonly Dictionary<Type, string> ValidParameterTypes = new Dictionary<Type, string> {
+            {typeof(byte),      @"\d{1,3}"},
+            {typeof(sbyte),     @"-?\d{1,3}"},
+            {typeof(int),       @"-?\d+"},
+            {typeof(uint),      @"\d+"},
+            {typeof(short),     @"-?\d+"},
+            {typeof(ushort),    @"\d+"},
+            {typeof(long),      @"-?\d+"},
+            {typeof(ulong),     @"\d+"},
+            {typeof(float),     @"-?\d+\.\d+"},
+            {typeof(double),    @"-?\d+\.\d+"},
+            {typeof(char),      @"[^/]"},
+            // native type object is not supported
+            {typeof(string),    @"[^/]*"},
+            {typeof(decimal),   @"-?\d+\.\d+"},
+        };
+        public Regex RoutingRegex { get; private set; }
+        private List<MethodInfo> RoutingMethods = new List<MethodInfo>();
 
-        internal sealed Webservice(HttpListenerContext context)
+        public Webservice()
         {
-            _context = context;
+            GenerateRoutingRegex();
         }
 
-        internal sealed void ProcessRequest(object doneEventObj)
+        internal void GenerateRoutingRegex()
+        {
+            StringBuilder sb = new StringBuilder();
+            bool first = false;
+            // Only select methods tagged with a PathAttribute
+            foreach (var method in this.GetType().GetMethods().Where(
+                         method => method.GetCustomAttributes(typeof(PathAttribute), false).Length > 0))
+            {
+                // Populate the map of url parameters
+                Dictionary<string, string> urlParams = new Dictionary<string, string>();
+                foreach (var param in method.GetParameters())
+                {
+                    if (param.GetType() == typeof(HttpListenerContext))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        urlParams[param.Name] = Webservice.ValidParameterTypes[param.ParameterType];
+                    }
+                    catch (KeyNotFoundException)
+                    {
+                        throw new InvalidOperationException(String.Format("Webservice {0} parameter {1} is not a native type.", this.GetType().ToString(), param.Name));
+                    }
+                }
+
+                // Add a new regex match for each path
+                foreach (string path in PathAttribute.PathsForMethod(method))
+                {
+                    if (first)
+                        first = false;
+                    else
+                        sb.Append("|");
+
+                    // Update path regular expression to reflect url parameters
+                    string pathRegex = Regex.Escape(path);
+                    foreach (var paramKvp in urlParams)
+                    {
+                        string key = String.Format(":{0}", paramKvp.Key);
+                        string regex = String.Format("(?<{0}>{1})", paramKvp.Key, paramKvp.Value);
+
+                        if (!pathRegex.Contains(key))
+                            throw new InvalidOperationException(String.Format("Webservice {0} parameter {1} not found in path {2}", this.GetType().Name, key, path));
+
+                        pathRegex = path.Replace(key, regex);
+                    }
+
+                    sb.AppendFormat("({0})", pathRegex);
+                    RoutingMethods.Add(method);
+                }
+            }
+
+            // Update instance variable
+            RoutingRegex = new Regex(sb.ToString());
+        }
+
+        internal void ProcessRequest(object doneEventObj)
         {
             ManualResetEvent doneEvent = (ManualResetEvent)doneEventObj;
             try
             {
-
+                // TODO: Parse URL Parameters
+                // TODO: Invoke Method Call
+                // TOOD: Close Connection
             }
             finally
             {
                 doneEvent.Set();
             }
         }
-
-        // must be public to avoid dealing with ReflectionPermission
-        // public sealed static ?????? GetMappings()
     }
 }
