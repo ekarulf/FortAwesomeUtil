@@ -48,7 +48,9 @@ namespace FortAwesomeUtil.Webserver
                 Dictionary<string, string> urlParams = new Dictionary<string, string>();
                 foreach (var param in method.GetParameters())
                 {
-                    if (param.GetType() == typeof(HttpListenerContext))
+                    if (param.GetType() == typeof(HttpListenerContext) ||
+                        param.GetType() == typeof(HttpListenerRequest) || 
+                        param.GetType() == typeof(HttpListenerResponse))
                     {
                         continue;
                     }
