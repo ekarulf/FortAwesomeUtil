@@ -15,9 +15,10 @@ namespace FortAwesomeUtil.Webserver
     class Webserver
     {
         // N.B. - This class makes heavy use of Regex objects, read up on the dangers of compiled Regex
-        private static Regex EscapedHttpWildcardRe = new Regex(@"^http[s]?://(\\\+|\\\*)(?:\:[\d]+)?/$", RegexOptions.Compiled);
+        // http://blogs.msdn.com/b/bclteam/archive/2010/06/25/optimizing-regular-expression-performance-part-i-working-with-the-regex-class-and-regex-objects.aspx
+        private static readonly Regex EscapedHttpWildcardRe = new Regex(@"^http[s]?://(\\\+|\\\*)(?:\:[\d]+)?/$", RegexOptions.Compiled);
         private HttpListener server = null;
-        private Dictionary<string, Type> services = new Dictionary<string, Type>();
+        private Dictionary<string, Webservice> services = new Dictionary<string, Webservice>();
         private Regex routingRegex = null;
         private List<ManualResetEvent> requestCompletionEvents = new List<ManualResetEvent>();
 
@@ -26,7 +27,7 @@ namespace FortAwesomeUtil.Webserver
             // Fail early for old Windows kernels that do not support http.sys
             if (!HttpListener.IsSupported)
             {
-                throw new PlatformNotSupportedException("Windows XP SP2/Server 2003 or newer is required.");
+                throw new PlatformNotSupportedException("Windows XP SP2/Server 2003 or newer is required to create a webserver.");
             }
 
             // Constructed here to prevent errors on unsupported kernels
@@ -37,14 +38,18 @@ namespace FortAwesomeUtil.Webserver
         {
             lock (server)
             {
-                // This limitation allows us to pre-compute the url processing regular expression
                 if (server.IsListening)
                 {
                     throw new InvalidOperationException("Can not add a prefix to a running server");
                 }
 
+                if (path.EndsWith("/"))
+                {
+                    throw new ArgumentException("path should end with /");
+                }
+
                 // Register into route processing
-                services.Add(path, webservice.GetType());
+                services.Add(path, webservice);
             }
         }
 
@@ -56,6 +61,13 @@ namespace FortAwesomeUtil.Webserver
                 {
                     throw new InvalidOperationException("Can not add a prefix to a running server");
                 }
+
+                if (prefix.EndsWith("/"))
+                {
+                    throw new ArgumentException("prefix should end with /");
+                }
+
+                // Register with http.sys
                 server.Prefixes.Add(prefix);
             }
         }
@@ -104,12 +116,8 @@ namespace FortAwesomeUtil.Webserver
                 }
             }
 
-            lock (requestCompletionEvents)
-            {
-                // Block until all workers are complete
-                WaitHandle.WaitAll(requestCompletionEvents.ToArray());
-            }
-
+            // Block until all workers are complete
+            WaitHandle.WaitAll(requestCompletionEvents.ToArray());
         }
 
         private void ProcessRequest(IAsyncResult result)
@@ -152,28 +160,26 @@ namespace FortAwesomeUtil.Webserver
 
             // Webservice
             first = true;
-            foreach (KeyValuePair<string, Type> kvp in services)
+            foreach (KeyValuePair<string, Webservice> kvp in services)
             {
                 string path = Regex.Escape(kvp.Key);
-                Type serviceType = kvp.Value;
+                Webservice webservice = kvp.Value;
                 sb.Append(first ? "(?:" : "|");
-                // Ideally I would be passing: Class<? extends Webservice>, which makes static invocation much prettier :)
-                Regex webserviceMap = (Regex)serviceType.InvokeMember("GetURLMapping", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy, null, null, null);
-                sb.AppendFormat("({0}({1}))", path, webserviceMap.ToString());
+                sb.AppendFormat("({0}({1}))", path, webservice.RoutingRegex.ToString());
                 first = false;
             }
             sb.Append(")");
+
+            // I create a compiled RegEx because I believe that GenerateRoutes
+            // not be called often during the execution of a program.
+            // The alternative is to use a regular regex and then do all
+            // processing in a static function.
+            routingRegex = new Regex(sb.ToString(), RegexOptions.Compiled);
         }
 
         private Webservice ResolveWebservice(HttpListenerContext context)
         {
-            Regex r;
-            Match m = r.Match(context.Request.Url);
-            m.Groups[2].Captures
-            
-            // Group 1: Prefix - assumed
-            // Group 2: Webservice Path
-            services.First(kvp => kvp.Key.Matches()));
+            Match m = routingRegex.Match(context.Request.Url.ToString());
             
             throw new NotImplementedException();
         }
