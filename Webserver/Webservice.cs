@@ -10,7 +10,7 @@ using FortAwesomeUtil.Webserver.Framework;
 
 namespace FortAwesomeUtil.Webserver
 {
-    abstract class Webservice
+    abstract public class Webservice
     {
         private static readonly Dictionary<Type, string> ValidParameterTypes = new Dictionary<Type, string> {
             {typeof(byte),      @"\d{1,3}"},
@@ -39,7 +39,7 @@ namespace FortAwesomeUtil.Webserver
         internal void GenerateRoutingRegex()
         {
             StringBuilder sb = new StringBuilder();
-            bool first = false;
+            bool first = true;
             // Only select methods tagged with a PathAttribute
             foreach (var method in this.GetType().GetMethods().Where(
                          method => method.GetCustomAttributes(typeof(PathAttribute), false).Length > 0))
@@ -48,9 +48,9 @@ namespace FortAwesomeUtil.Webserver
                 Dictionary<string, string> urlParams = new Dictionary<string, string>();
                 foreach (var param in method.GetParameters())
                 {
-                    if (param.GetType() == typeof(HttpListenerContext) ||
-                        param.GetType() == typeof(HttpListenerRequest) || 
-                        param.GetType() == typeof(HttpListenerResponse))
+                    if (param.ParameterType == typeof(HttpListenerContext) ||
+                        param.ParameterType == typeof(HttpListenerRequest) || 
+                        param.ParameterType == typeof(HttpListenerResponse))
                     {
                         continue;
                     }
@@ -84,6 +84,12 @@ namespace FortAwesomeUtil.Webserver
                             throw new InvalidOperationException(String.Format("Webservice {0} parameter {1} not found in path {2}", this.GetType().Name, key, path));
 
                         pathRegex = path.Replace(key, regex);
+                    }
+
+                    // "Index" pages
+                    if (path == "/")
+                    {
+                        pathRegex = "";
                     }
 
                     sb.AppendFormat("({0})", pathRegex);
