@@ -101,9 +101,9 @@ namespace FortAwesomeUtil.Webserver
             RoutingRegex = new Regex(sb.ToString());
         }
 
-        internal void ProcessRequest(object doneEventObj)
+        internal void ProcessRequest(object callbackObj)
         {
-            ManualResetEvent doneEvent = (ManualResetEvent)doneEventObj;
+            ManualResetEvent doneEvent = (ManualResetEvent)callbackObj;
             try
             {
                 // TODO: Parse URL Parameters
