@@ -151,7 +151,10 @@ namespace FortAwesomeUtil.Webserver
             foreach (string prefix in server.Prefixes)
             {
                 string clean_prefix = Regex.Escape(prefix);
-                clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, @"$1[\d\w-\.]+$3");
+                if (prefix == "/")
+                    clean_prefix = "";
+                else
+                    clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, @"$1[\d\w-\.]+$3");
                 sb.Append(first ? "(?:" : "|");
                 sb.Append(clean_prefix);
                 first = false;
@@ -165,7 +168,7 @@ namespace FortAwesomeUtil.Webserver
                 string path = Regex.Escape(kvp.Key);
                 Webservice webservice = kvp.Value;
                 sb.Append(first ? "(?:" : "|");
-                sb.AppendFormat("({0}({1}))", path, webservice.RoutingRegex.ToString());
+                sb.AppendFormat("(?<{0}>{1}({2}))", WebserviceGroupName(webservice), path, webservice.RoutingRegex.ToString());
                 first = false;
             }
             sb.Append(")$");
@@ -177,6 +180,11 @@ namespace FortAwesomeUtil.Webserver
             routingRegex = new Regex(sb.ToString(), RegexOptions.Compiled);
         }
 
+        internal static string WebserviceGroupName(Webservice service)
+        {
+            return String.Format("svc{0}", service.GetHashCode());
+        }
+
         public Webservice ResolveWebservice(HttpListenerContext context)
         {
             return ResolveWebservice(context.Request.Url.ToString());
@@ -184,9 +192,16 @@ namespace FortAwesomeUtil.Webserver
 
         public Webservice ResolveWebservice(string url)
         {
-            Match m = routingRegex.Match(url);
-
-            throw new NotImplementedException();
+            Match match = routingRegex.Match(url);
+            foreach (Webservice webservice in services.Values)
+            {
+                var foo = match.Groups[WebserviceGroupName(webservice)];
+                if (foo.Success)
+                {
+                    return webservice;
+                }
+            }
+            return null;
         }
     }
 }
