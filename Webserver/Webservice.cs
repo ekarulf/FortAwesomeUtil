@@ -78,7 +78,7 @@ namespace FortAwesomeUtil.Webserver
                     foreach (var paramKvp in urlParams)
                     {
                         string key = String.Format(":{0}", paramKvp.Key);
-                        string regex = String.Format("(?<{0}>{1})", paramKvp.Key, paramKvp.Value);
+                        string regex = String.Format("(?<arg_{0}>{1})", paramKvp.Key, paramKvp.Value);
 
                         if (!pathRegex.Contains(key))
                             throw new InvalidOperationException(String.Format("Webservice {0} parameter {1} not found in path {2}", this.GetType().Name, key, path));
@@ -92,7 +92,7 @@ namespace FortAwesomeUtil.Webserver
                         pathRegex = "";
                     }
 
-                    sb.AppendFormat("({0})", pathRegex);
+                    sb.AppendFormat("(?<method_{0}>{1})", method.GetHashCode(), pathRegex);
                     RoutingMethods.Add(method);
                 }
             }

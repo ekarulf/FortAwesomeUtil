@@ -168,7 +168,7 @@ namespace FortAwesomeUtil.Webserver
                 string path = Regex.Escape(kvp.Key);
                 Webservice webservice = kvp.Value;
                 sb.Append(first ? "(?:" : "|");
-                sb.AppendFormat("(?<{0}>{1}({2}))", WebserviceGroupName(webservice), path, webservice.RoutingRegex.ToString());
+                sb.AppendFormat("(?<{0}>{1}(?:{2}))", WebserviceGroupName(webservice), path, webservice.RoutingRegex.ToString());
                 first = false;
             }
             sb.Append(")$");
@@ -182,7 +182,7 @@ namespace FortAwesomeUtil.Webserver
 
         internal static string WebserviceGroupName(Webservice service)
         {
-            return String.Format("svc{0}", service.GetHashCode());
+            return String.Format("service_{0}", service.GetHashCode());
         }
 
         public Webservice ResolveWebservice(HttpListenerContext context)
