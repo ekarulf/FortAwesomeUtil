@@ -12,7 +12,7 @@ namespace FortAwesomeUtil.Webserver
 {
     abstract public class Webservice
     {
-        private static readonly Dictionary<Type, string> ValidParameterTypes = new Dictionary<Type, string> {
+        internal static readonly Dictionary<Type, string> ValidParameterTypes = new Dictionary<Type, string> {
             {typeof(byte),      @"\d{1,3}"},
             {typeof(sbyte),     @"-?\d{1,3}"},
             {typeof(int),       @"-?\d+"},
@@ -28,6 +28,9 @@ namespace FortAwesomeUtil.Webserver
             {typeof(string),    @"[^/]*"},
             {typeof(decimal),   @"-?\d+\.\d+"},
         };
+
+        internal static readonly List<Type> ValidReturnTypes = new List<Type> { typeof(string) };
+
         public Regex RoutingRegex { get; private set; }
         private List<MethodInfo> RoutingMethods = new List<MethodInfo>();
 
@@ -44,10 +47,17 @@ namespace FortAwesomeUtil.Webserver
             foreach (var method in this.GetType().GetMethods().Where(
                          method => method.GetCustomAttributes(typeof(PathAttribute), false).Length > 0))
             {
+                // Ensure the proper return type
+                if (!Webservice.ValidReturnTypes.Contains(method.ReturnType))
+                {
+                    throw new InvalidOperationException(String.Format("Webservice {0} return type is not a supported.", this.GetType().ToString()));
+                }
+
                 // Populate the map of url parameters
                 Dictionary<string, string> urlParams = new Dictionary<string, string>();
                 foreach (var param in method.GetParameters())
                 {
+
                     if (param.ParameterType == typeof(HttpListenerContext) ||
                         param.ParameterType == typeof(HttpListenerRequest) || 
                         param.ParameterType == typeof(HttpListenerResponse))
@@ -92,7 +102,7 @@ namespace FortAwesomeUtil.Webserver
                         pathRegex = "";
                     }
 
-                    sb.AppendFormat("(?<method_{0}>{1})", method.GetHashCode(), pathRegex);
+                    sb.AppendFormat("(?<{0}>{1})", WebmethodGroupName(method), pathRegex);
                     RoutingMethods.Add(method);
                 }
             }
@@ -101,19 +111,31 @@ namespace FortAwesomeUtil.Webserver
             RoutingRegex = new Regex(sb.ToString());
         }
 
-        internal void ProcessRequest(object callbackObj)
+        internal List<MethodInfo> GetWebMethods()
         {
-            ManualResetEvent doneEvent = (ManualResetEvent)callbackObj;
-            try
+            return RoutingMethods;
+        }
+
+        internal static string WebmethodGroupName(MethodInfo method)
+        {
+            return String.Format("method_{0}", method.GetHashCode());
+        }
+
+        internal static string WebArgumentGroupName(string name)
+        {
+            return String.Format("arg_{0}", name);
+        }
+
+        internal MethodInfo ResolveMethod(Match match)
+        {
+            foreach (var method in RoutingMethods)
             {
-                // TODO: Parse URL Parameters
-                // TODO: Invoke Method Call
-                // TOOD: Close Connection
+                if (match.Groups[WebmethodGroupName(method)].Success)
+                {
+                    return method;
+                }
             }
-            finally
-            {
-                doneEvent.Set();
-            }
+            return null;
         }
     }
 }

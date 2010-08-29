@@ -12,6 +12,12 @@ using System.Reflection;
 
 namespace FortAwesomeUtil.Webserver
 {
+    struct WebrequestCallback
+    {
+        public HttpListenerContext context;
+        public ManualResetEvent doneEvent;
+    }
+
     public class Webserver
     {
         // N.B. - This class makes heavy use of Regex objects, read up on the dangers of compiled Regex
@@ -117,19 +123,23 @@ namespace FortAwesomeUtil.Webserver
             }
 
             // Block until all workers are complete
-            WaitHandle.WaitAll(requestCompletionEvents.ToArray());
+            if (requestCompletionEvents.Count > 0)
+                WaitHandle.WaitAll(requestCompletionEvents.ToArray());
         }
 
         private void ProcessRequest(IAsyncResult result)
         {
-            HttpListenerContext ctx = server.EndGetContext(result);
-            ManualResetEvent doneEvent = new ManualResetEvent(false);
-            Webservice webservice = ResolveWebservice(ctx);
-            ThreadPool.QueueUserWorkItem(new WaitCallback(webservice.ProcessRequest), doneEvent);
+            // Continue handling requests
+            server.BeginGetContext(new AsyncCallback(this.ProcessRequest), null);
+
+            WebrequestCallback callbackObj = new WebrequestCallback();
+            callbackObj.context = server.EndGetContext(result);
+            callbackObj.doneEvent = new ManualResetEvent(false);
+            ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessRequest), callbackObj);
 
             lock (requestCompletionEvents)
             {
-                requestCompletionEvents.Add(doneEvent);
+                requestCompletionEvents.Add(callbackObj.doneEvent);
 
                 // Prune the processingEvents list
                 requestCompletionEvents.RemoveAll(processingEvent => processingEvent.WaitOne(0));
@@ -154,7 +164,8 @@ namespace FortAwesomeUtil.Webserver
                 if (prefix == "/")
                     clean_prefix = "";
                 else
-                    clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, @"$1[\d\w-\.]+$3");
+                    // clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, @"$1[\d\w-\.]+$3");
+                    clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, "");
                 sb.Append(first ? "(?:" : "|");
                 sb.Append(clean_prefix);
                 first = false;
@@ -185,14 +196,14 @@ namespace FortAwesomeUtil.Webserver
             return String.Format("service_{0}", service.GetHashCode());
         }
 
-        public Webservice ResolveWebservice(HttpListenerContext context)
-        {
-            return ResolveWebservice(context.Request.Url.ToString());
-        }
-
         public Webservice ResolveWebservice(string url)
         {
             Match match = routingRegex.Match(url);
+            return ResolveWebservice(match);
+        }
+
+        public Webservice ResolveWebservice(Match match)
+        {
             foreach (Webservice webservice in services.Values)
             {
                 var foo = match.Groups[WebserviceGroupName(webservice)];
@@ -202,6 +213,118 @@ namespace FortAwesomeUtil.Webserver
                 }
             }
             return null;
+        }
+
+        internal void ProcessRequest(object obj)
+        {
+            WebrequestCallback callbackObj = (WebrequestCallback)obj;
+            HttpListenerContext context = callbackObj.context;
+
+            try
+            {
+                // Resolve to method
+                Match match = routingRegex.Match(callbackObj.context.Request.Url.AbsolutePath);
+                Webservice service = ResolveWebservice(match);
+                MethodInfo method = null;
+
+                if (service != null)
+                {
+                    method = service.ResolveMethod(match);
+                }
+
+                if (service == null || method == null)
+                {
+                    context.Response.StatusCode = 404;
+                    context.Response.StatusDescription = "Service not found";
+                }
+                else
+                {
+                    // TODO: Parse POST then GET params?
+                    // TODO: Allow variables to be tagged with resolution order
+                    // void foo(@WebVar('POST') int x)
+
+                    object[] args = new object[method.GetParameters().Length];
+
+                    foreach (var param in method.GetParameters())
+                    {
+                        if (param.ParameterType == typeof(HttpListenerContext))
+                        {
+                            args[param.Position] = callbackObj.context;
+                        }
+                        else if (param.ParameterType == typeof(HttpListenerRequest))
+                        {
+                            args[param.Position] = callbackObj.context.Request;
+                        }
+                        else if (param.ParameterType == typeof(HttpListenerResponse))
+                        {
+                            args[param.Position] = callbackObj.context.Response;
+                        }
+                        else
+                        {
+                            //
+                            // Pull argument from URI
+                            //
+
+                            Group group = match.Groups[Webservice.WebArgumentGroupName(param.Name)];
+                            // If the assertion below fails, check the routing regex.
+                            Debug.Assert(group.Success &&
+                                Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType));
+                            string argString = group.Value;
+                            object argValue = null;
+                            if (!group.Success)
+                            {
+                                throw new InvalidOperationException("Programmer Error: URL group match was not successful");
+                            }
+                            else if (param.ParameterType == typeof(string))
+                            {
+                                argValue = argString;
+                            }
+                            else if (Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType))
+                            {
+                                object[] temp = { argString };
+                                argValue = param.ParameterType.InvokeMember("Parse", BindingFlags.Public | BindingFlags.Static | BindingFlags.InvokeMethod, null, null, temp);
+                            }
+                            else
+                            {
+                                throw new InvalidOperationException(string.Format("Programmer Error: Type {0} is not a supported WebArgument type"));
+                            }
+                            args[param.Position] = argValue;
+                        }
+                    }
+
+                    object returnValue = method.Invoke(service, args);
+
+                    if (context.Response.StatusCode == (int)HttpStatusCode.OK && returnValue != null)
+                    {
+                        Encoding encoding = context.Response.ContentEncoding;
+                        if (encoding == null)
+                        {
+                            context.Response.ContentEncoding = encoding = Encoding.UTF8;
+                        }
+
+                        byte[] buffer = null;
+                        if (method.ReturnType == typeof(string))
+                        {
+                            buffer = encoding.GetBytes((string)returnValue);
+                        }
+
+                        if (buffer != null)
+                        {
+                            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+                        }
+                        else
+                        {
+                            context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+                            context.Response.StatusDescription = "Invalid Return Type";
+                        }
+                    }
+                }
+                callbackObj.context.Response.Close();
+            }
+            finally
+            {
+                callbackObj.doneEvent.Set();
+            }
         }
     }
 }
