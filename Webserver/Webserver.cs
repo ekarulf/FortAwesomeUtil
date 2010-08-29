@@ -26,7 +26,6 @@ namespace FortAwesomeUtil.Webserver
         private HttpListener server = null;
         private Dictionary<string, Webservice> services = new Dictionary<string, Webservice>();
         private Regex routingRegex = null;
-        private List<ManualResetEvent> requestCompletionEvents = new List<ManualResetEvent>();
 
         public Webserver()
         {
@@ -112,38 +111,11 @@ namespace FortAwesomeUtil.Webserver
             }
         }
 
-        public void Join()
-        {
-            lock (server)
-            {
-                if (!server.IsListening)
-                {
-                    throw new InvalidOperationException("Server has not started");
-                }
-            }
-
-            // Block until all workers are complete
-            if (requestCompletionEvents.Count > 0)
-                WaitHandle.WaitAll(requestCompletionEvents.ToArray());
-        }
-
         private void ProcessRequest(IAsyncResult result)
         {
-            // Continue handling requests
+            HttpListenerContext context = server.EndGetContext(result);
             server.BeginGetContext(new AsyncCallback(this.ProcessRequest), null);
-
-            WebrequestCallback callbackObj = new WebrequestCallback();
-            callbackObj.context = server.EndGetContext(result);
-            callbackObj.doneEvent = new ManualResetEvent(false);
-            ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessRequest), callbackObj);
-
-            lock (requestCompletionEvents)
-            {
-                requestCompletionEvents.Add(callbackObj.doneEvent);
-
-                // Prune the processingEvents list
-                requestCompletionEvents.RemoveAll(processingEvent => processingEvent.WaitOne(0));
-            }
+            DispatchWebservice(context);
         }
 
         /// <summary>
@@ -215,116 +187,106 @@ namespace FortAwesomeUtil.Webserver
             return null;
         }
 
-        internal void ProcessRequest(object obj)
+        internal void DispatchWebservice(HttpListenerContext context)
         {
-            WebrequestCallback callbackObj = (WebrequestCallback)obj;
-            HttpListenerContext context = callbackObj.context;
+            // Resolve to method
+            Match match = routingRegex.Match(context.Request.Url.AbsolutePath);
+            Webservice service = ResolveWebservice(match);
+            MethodInfo method = null;
 
-            try
+            if (service != null)
             {
-                // Resolve to method
-                Match match = routingRegex.Match(callbackObj.context.Request.Url.AbsolutePath);
-                Webservice service = ResolveWebservice(match);
-                MethodInfo method = null;
+                method = service.ResolveMethod(match);
+            }
 
-                if (service != null)
+            if (service == null || method == null)
+            {
+                context.Response.StatusCode = 404;
+                context.Response.StatusDescription = "Service not found";
+            }
+            else
+            {
+                // TODO: Parse POST then GET params?
+                // TODO: Allow variables to be tagged with resolution order
+                // void foo(@WebVar('POST') int x)
+
+                object[] args = new object[method.GetParameters().Length];
+
+                foreach (var param in method.GetParameters())
                 {
-                    method = service.ResolveMethod(match);
-                }
-
-                if (service == null || method == null)
-                {
-                    context.Response.StatusCode = 404;
-                    context.Response.StatusDescription = "Service not found";
-                }
-                else
-                {
-                    // TODO: Parse POST then GET params?
-                    // TODO: Allow variables to be tagged with resolution order
-                    // void foo(@WebVar('POST') int x)
-
-                    object[] args = new object[method.GetParameters().Length];
-
-                    foreach (var param in method.GetParameters())
+                    if (param.ParameterType == typeof(HttpListenerContext))
                     {
-                        if (param.ParameterType == typeof(HttpListenerContext))
+                        args[param.Position] = context;
+                    }
+                    else if (param.ParameterType == typeof(HttpListenerRequest))
+                    {
+                        args[param.Position] = context.Request;
+                    }
+                    else if (param.ParameterType == typeof(HttpListenerResponse))
+                    {
+                        args[param.Position] = context.Response;
+                    }
+                    else
+                    {
+                        //
+                        // Pull argument from URI
+                        //
+
+                        Group group = match.Groups[Webservice.WebArgumentGroupName(param.Name)];
+                        // If the assertion below fails, check the routing regex.
+                        Debug.Assert(group.Success &&
+                            Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType));
+                        string argString = group.Value;
+                        object argValue = null;
+                        if (!group.Success)
                         {
-                            args[param.Position] = callbackObj.context;
+                            throw new InvalidOperationException("Programmer Error: URL group match was not successful");
                         }
-                        else if (param.ParameterType == typeof(HttpListenerRequest))
+                        else if (param.ParameterType == typeof(string))
                         {
-                            args[param.Position] = callbackObj.context.Request;
+                            argValue = argString;
                         }
-                        else if (param.ParameterType == typeof(HttpListenerResponse))
+                        else if (Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType))
                         {
-                            args[param.Position] = callbackObj.context.Response;
+                            object[] temp = { argString };
+                            argValue = param.ParameterType.InvokeMember("Parse", BindingFlags.Public | BindingFlags.Static | BindingFlags.InvokeMethod, null, null, temp);
                         }
                         else
                         {
-                            //
-                            // Pull argument from URI
-                            //
-
-                            Group group = match.Groups[Webservice.WebArgumentGroupName(param.Name)];
-                            // If the assertion below fails, check the routing regex.
-                            Debug.Assert(group.Success &&
-                                Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType));
-                            string argString = group.Value;
-                            object argValue = null;
-                            if (!group.Success)
-                            {
-                                throw new InvalidOperationException("Programmer Error: URL group match was not successful");
-                            }
-                            else if (param.ParameterType == typeof(string))
-                            {
-                                argValue = argString;
-                            }
-                            else if (Webservice.ValidParameterTypes.Keys.Contains(param.ParameterType))
-                            {
-                                object[] temp = { argString };
-                                argValue = param.ParameterType.InvokeMember("Parse", BindingFlags.Public | BindingFlags.Static | BindingFlags.InvokeMethod, null, null, temp);
-                            }
-                            else
-                            {
-                                throw new InvalidOperationException(string.Format("Programmer Error: Type {0} is not a supported WebArgument type"));
-                            }
-                            args[param.Position] = argValue;
+                            throw new InvalidOperationException(string.Format("Programmer Error: Type {0} is not a supported WebArgument type"));
                         }
-                    }
-
-                    object returnValue = method.Invoke(service, args);
-
-                    if (context.Response.StatusCode == (int)HttpStatusCode.OK && returnValue != null)
-                    {
-                        Encoding encoding = context.Response.ContentEncoding;
-                        if (encoding == null)
-                        {
-                            context.Response.ContentEncoding = encoding = Encoding.UTF8;
-                        }
-
-                        byte[] buffer = null;
-                        if (method.ReturnType == typeof(string))
-                        {
-                            buffer = encoding.GetBytes((string)returnValue);
-                        }
-
-                        if (buffer != null)
-                        {
-                            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                        }
-                        else
-                        {
-                            context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
-                            context.Response.StatusDescription = "Invalid Return Type";
-                        }
+                        args[param.Position] = argValue;
                     }
                 }
-                callbackObj.context.Response.Close();
+
+                object returnValue = method.Invoke(service, args);
+
+                if (context.Response.StatusCode == (int)HttpStatusCode.OK && returnValue != null)
+                {
+                    Encoding encoding = context.Response.ContentEncoding;
+                    if (encoding == null)
+                    {
+                        context.Response.ContentEncoding = encoding = Encoding.UTF8;
+                    }
+
+                    byte[] buffer = null;
+                    if (method.ReturnType == typeof(string))
+                    {
+                        buffer = encoding.GetBytes((string)returnValue);
+                    }
+
+                    if (buffer != null)
+                    {
+                        context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+                    }
+                    else
+                    {
+                        context.Response.StatusCode = (int)HttpStatusCode.InternalServerError;
+                        context.Response.StatusDescription = "Invalid Return Type";
+                    }
+                }
             }
-            finally
-            {
-                callbackObj.doneEvent.Set();
-            }
+            context.Response.Close();
         }
     }
 }
