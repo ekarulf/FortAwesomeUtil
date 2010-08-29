@@ -22,7 +22,7 @@ namespace FortAwesomeUtil.Webserver
     {
         // N.B. - This class makes heavy use of Regex objects, read up on the dangers of compiled Regex
         // http://blogs.msdn.com/b/bclteam/archive/2010/06/25/optimizing-regular-expression-performance-part-i-working-with-the-regex-class-and-regex-objects.aspx
-        private static readonly Regex EscapedHttpWildcardRe = new Regex(@"^(http[s]?://)(\\\+|\\\*)(\:[\d]+)?", RegexOptions.Compiled);
+        private static readonly Regex EscapedHttpWildcardRe = new Regex(@"^(http[s]?://)(\+|\*)(\:[\d]+)?", RegexOptions.Compiled);
         private HttpListener server = null;
         private Dictionary<string, Webservice> services = new Dictionary<string, Webservice>();
         private Regex routingRegex = null;
@@ -111,7 +111,7 @@ namespace FortAwesomeUtil.Webserver
             }
         }
 
-        private void ProcessRequest(IAsyncResult result)
+        private void ProcessRequest(IAsyncResult result)    
         {
             HttpListenerContext context = server.EndGetContext(result);
             server.BeginGetContext(new AsyncCallback(this.ProcessRequest), null);
@@ -132,12 +132,8 @@ namespace FortAwesomeUtil.Webserver
             bool first = true;
             foreach (string prefix in server.Prefixes)
             {
-                string clean_prefix = Regex.Escape(prefix);
-                if (prefix == "/")
-                    clean_prefix = "";
-                else
-                    // clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, @"$1[\d\w-\.]+$3");
-                    clean_prefix = EscapedHttpWildcardRe.Replace(clean_prefix, "");
+                Uri uri = new Uri(EscapedHttpWildcardRe.Replace(prefix, "$1localhost$3"));
+                string clean_prefix = Regex.Escape(uri.AbsolutePath);
                 sb.Append(first ? "(?:" : "|");
                 sb.Append(clean_prefix);
                 first = false;
@@ -149,6 +145,8 @@ namespace FortAwesomeUtil.Webserver
             foreach (KeyValuePair<string, Webservice> kvp in services)
             {
                 string path = Regex.Escape(kvp.Key);
+                if (path == "/")
+                    path = "";
                 Webservice webservice = kvp.Value;
                 sb.Append(first ? "(?:" : "|");
                 sb.AppendFormat("(?<{0}>{1}(?:{2}))", WebserviceGroupName(webservice), path, webservice.RoutingRegex.ToString());
